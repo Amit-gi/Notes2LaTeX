@@ -1,114 +1,55 @@
-import {
-	Editor,
-	MarkdownView,
-	MarkdownFileInfo,
-	Modal,
-	Notice,
-	Plugin,
-} from 'obsidian';
-import {
-	DEFAULT_SETTINGS,
-	MyPluginSettings,
-	SampleSettingTab,
-} from './settings';
+import { Notice, Plugin, arrayBufferToBase64 } from 'obsidian';
+import { DEFAULTS, Settings, SettingsTab } from './settings';
+import { GDrive } from './Gdrive';
 
-// Remember to rename these classes and interfaces!
+export default class NotesToLaTeX extends Plugin {
+    settings!: Settings;
+    private busy = false;
 
-export default class MyPlugin extends Plugin {
-	settings!: MyPluginSettings;
+    async onload() {
+        this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+        this.addSettingTab(new SettingsTab(this.app, this));
+        this.addCommand({
+            id: 'process-drive-pdfs',
+            name: 'Process PDFs from Google Drive',
+            callback: () => void this.processDrive(),
+        });
+    }
 
-	async onload() {
-		await this.loadSettings();
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (_evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
+    async processDrive() {
+        if (this.busy) return;
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+        const key = await this.app.secretStorage.getSecret(this.settings.apiKeySecret);
+        if (!key || !this.settings.folderId) {
+            new Notice('Set the API key and Drive folder ID in settings first');
+            return;
+        }
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			},
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (
-				editor: Editor,
-				_ctx: MarkdownView | MarkdownFileInfo,
-			) => {
-				editor.replaceSelection('Sample editor command');
-			},
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView =
-					this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+        this.busy = true;
+        try {
+            const drive = new GDrive(key, this.settings.folderId);
+            // Re-list every time, so files added during processing get picked up
+            const next = async () =>
+                (await drive.list()).find((f) => !this.settings.processedIds.includes(f.id));
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			},
-		});
+            for (let file = await next(); file; file = await next()) {
+                const base64 = arrayBufferToBase64(await drive.download(file.id));
+                console.log(file.name, 'base64 length:', base64.length);
+                // TODO: send `base64` to Gemini (mime type application/pdf) and create the note
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(activeDocument, 'click', (_evt: MouseEvent) => {
-			new Notice('Click');
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(
-			window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000),
-		);
-	}
-
-	onunload() {}
-
-	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<MyPluginSettings>,
-		);
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
-	}
+                this.settings.processedIds = [...this.settings.processedIds, file.id];
+                await this.saveSettings();
+            }
+            new Notice('Done');
+        } catch (e) {
+            console.error(e);
+            new Notice('Failed, see console');
+        } finally {
+            this.busy = false;
+        }
+    }
 }
