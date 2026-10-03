@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "Notes2LaTeX",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "An Obsidian plugin that imports PDFs from a public Google Drive folder and converts them into LaTeX-ready markdown.",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {

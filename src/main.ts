@@ -1,6 +1,8 @@
 import { Notice, Plugin, arrayBufferToBase64 } from 'obsidian';
 import { DEFAULTS, Settings, SettingsTab } from './settings';
 import { GDrive } from './Gdrive';
+import { Gemini } from './Gemini';
+import { createNoteFromOutput } from './note';
 
 export default class NotesToLaTeX extends Plugin {
     settings!: Settings;
@@ -23,24 +25,33 @@ export default class NotesToLaTeX extends Plugin {
     async processDrive() {
         if (this.busy) return;
 
-        const key = await this.app.secretStorage.getSecret(this.settings.apiKeySecret);
-        if (!key || !this.settings.folderId) {
-            new Notice('Set the API key and Drive folder ID in settings first');
+        const driveKey = await this.app.secretStorage.getSecret(this.settings.driveKeySecret);
+        const geminiKey = await this.app.secretStorage.getSecret(this.settings.geminiKeySecret);
+        if (!driveKey || !geminiKey || !this.settings.folderId) {
+            new Notice('Set both API keys and the Drive folder ID in settings first');
             return;
         }
 
         this.busy = true;
         try {
-            const drive = new GDrive(key, this.settings.folderId);
+            const drive = new GDrive(driveKey, this.settings.folderId);
+            const gemini = new Gemini(geminiKey);
+            const prompt = (
+                await this.app.vault.adapter.read(`${this.manifest.dir}/prompt.md`)
+            ).replace('{{TOPICS}}', this.settings.topics.map((t) => t.name).join(', ') || 'Unsorted');
+
             // Re-list every time, so files added during processing get picked up
             const next = async () =>
                 (await drive.list()).find((f) => !this.settings.processedIds.includes(f.id));
 
             for (let file = await next(); file; file = await next()) {
-                const base64 = arrayBufferToBase64(await drive.download(file.id));
-                console.log(file.name, 'base64 length:', base64.length);
-                // TODO: send `base64` to Gemini (mime type application/pdf) and create the note
+                console.log('Processing file:', file.name);
 
+                const base64 = arrayBufferToBase64(await drive.download(file.id));
+                const text = await gemini.convert(base64, prompt);
+                console.log('model output is working')
+                await createNoteFromOutput(this.app, this.settings, file.name, text);
+                console.log('creating file is working')
                 this.settings.processedIds = [...this.settings.processedIds, file.id];
                 await this.saveSettings();
             }
